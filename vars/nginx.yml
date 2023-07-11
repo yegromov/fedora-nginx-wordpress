@@ -1,0 +1,5 @@
+#HTTP Settings
+servername: localhost
+docroot: /var/www/html/
+httpd_owner: nginx
+httpd_group: nginx

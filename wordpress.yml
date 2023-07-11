@@ -1,0 +1,204 @@
+- name: Configure webserver with nginx
+  hosts: localvms
+  become: true
+  vars_files:
+    - vars/nginx.yml
+    - vars/mariadb.yml
+    - vars/wordpress.yml
+  tasks:
+   # Task 1: Install nginx
+   -  name: Install NGINX
+      dnf: name=nginx
+      tags:
+        - lemp
+
+   # Task 2: Copy nginx config file
+   -  name: Copy nginx config file
+      template:
+        src: "nginx.conf.j2"
+        dest: "/etc/nginx/nginx.conf"
+      tags:
+        - lemp
+
+   # Task 3: Install PHP
+   -  name: Install PHP
+      dnf:
+         name:
+         - php-fpm
+         - php-xml
+         - php-sodium
+         - php-opcache
+         - php-intl
+         - php-mysqlnd
+         - php-gd
+         - php-mbstring
+         - php-zip
+         - php-json
+      tags:
+        - lemp
+
+   # Task 4: Install MariaDB
+   -  name: Install MariaDB
+      dnf:
+         name:
+         - mariadb
+         - mariadb-server
+         - python3-mysql
+
+   # Task 5: Restart MariaDB
+   -  name: Restart MariaDB
+      ansible.builtin.systemd:
+        name: mariadb
+        state: restarted
+        daemon_reload: true
+        enabled: true
+
+   # Task 6: Set root password for MariaDB
+   -  name: "Setting ROOT password for mariadb-server"
+      ignore_errors: true
+      mysql_user:
+        login_user: "root"
+        login_password: ""
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        name: "root"
+        password: "{{ mariadb_root_password }}"
+      tags:
+        - lemp
+        - mariadb
+
+   -  name: "MariaDB: Drop anonymous user"
+      mysql_query:
+         login_user: "root"
+         login_password: "{{ mariadb_root_password }}"
+         query: DELETE FROM mysql.user WHERE User=''
+
+   # Task 7: Creating DB for the website
+   -  name: "Creating DB for Wordpress - {{ mysql_db }}"
+      mysql_db:
+        login_user: "root"
+        login_password: "{{ mariadb_root_password }}"
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        name: "{{ mysql_db }}"
+        state: present
+      tags:
+        - lemp
+        - mariadb
+
+   # Task 8: Creating extra user for WordPress
+   - name: "Creating extra user for WordPress - wordpress"
+     mysql_user:
+        login_user: "root"
+        login_password: "{{ mariadb_root_password }}"
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_password }}"
+        host: "localhost"
+        priv: "{{ mysql_db }}.*:ALL"
+     tags:
+        - lemp
+        - mariadb
+
+   # Task 9: Downloading WordPress
+   - name: "Downloading WordPress using URL"
+     get_url:
+      url: "{{ wp_url }}"
+      dest: "/tmp/wordpress.tar.gz"
+     tags:
+        - lemp
+        - mariadb
+        - wordpress
+
+   # Task 10: Extracting WordPress
+   - name: "Extracting WordPress"
+     unarchive:
+        src: "/tmp/wordpress.tar.gz"
+        dest: "/tmp/"
+        remote_src: true
+     tags:
+        - lamp
+        - mariadb
+        - wordpress
+
+    # Task 11: Copying WordPress files to docroot
+   - name: "Copying WordPress files to docroot"
+     copy:
+        src: "/tmp/wordpress/"
+        dest: "{{ docroot }}"
+        remote_src: true
+        owner: "{{ httpd_owner }}"
+        group: "{{ httpd_group }}"
+     tags:
+        - lemp
+        - mariadb
+        - wordpress
+
+   # Task 12: Copying wp-config.php file to remote server
+   - name: "Copying wp-config.php file to remote server"
+     template:
+        src: "wp-config.php.j2"
+        dest: "{{ docroot }}/wp-config.php"
+        owner: "{{ httpd_owner }}"
+        group: "{{ httpd_group }}"
+     tags:
+        - lemp
+        - mariadb
+        - wordpress
+
+
+   # Task 13. Allow SELinux access to Wordpress files
+   - name: "Allow nginx to access files in {{ docroot }} (SELinux)"
+     community.general.sefcontext:
+        target: "{{ docroot }}(/.*)?"
+        setype: httpd_sys_content_t
+        state: present
+
+   # Task 14. Allow nginx to write content and config files for Wordpress
+   - name: "Allow nginx to write content and config files in {{ docroot }} (SELinux)"
+     community.general.sefcontext:
+        target: "{{ docroot }}(/.*)?"
+        setype: httpd_sys_rw_content_t
+        state: present
+
+   # Task 15. Apply SELinux file context
+   - name: Apply SELinux file context
+     ansible.builtin.command: "restorecon -irv {{ docroot }}"
+
+
+   # Task 16. Set httpd_can_network_connect flag ON and enable it to persist on reboot
+   - name: Set httpd_can_network_connect flag ON and enable it to persist on reboot
+     ansible.posix.seboolean:
+        name: httpd_can_network_connect
+        state: yes
+        persistent: yes
+
+   # Task 17: Restart PHP-FPM
+   -  name: Restart PHP-FPM
+      ansible.builtin.systemd:
+        name: mariadb
+        state: restarted
+        daemon_reload: true
+        enabled: true
+      tags:
+        - lemp
+
+   # Task 18: Restart NGINX
+   -  name: Restart NGINX
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+        daemon_reload: true
+        enabled: true
+      tags:
+        - lemp
+
+   # Task 19: Permit traffic in default zone for http service
+   -  name: Permit traffic in default zone for http service
+      ansible.posix.firewalld:
+         service: http
+         state: enabled
+         permanent: true
+         immediate: true
+
+   # Task 20: Reload firewalld
+   -  name: reload firewalld
+      command: firewall-cmd --reload
